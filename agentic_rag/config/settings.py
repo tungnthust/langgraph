@@ -23,6 +23,11 @@ EMBEDDING_MODEL_NAME = "BAAI/bge-m3"
 EMBEDDING_BATCH_SIZE = 32
 EMBEDDING_DEVICE = "cuda" if os.getenv("USE_GPU", "true").lower() == "true" else "cpu"
 
+# Vietnamese NER model for keyword extraction
+NER_MODEL_NAME = os.getenv("NER_MODEL_NAME", "NlpHUST/ner-vietnamese-electra-base")
+NER_DEVICE = "cuda" if os.getenv("USE_GPU", "true").lower() == "true" else "cpu"
+ENABLE_KEYWORD_EXTRACTION = os.getenv("ENABLE_KEYWORD_EXTRACTION", "true").lower() == "true"
+
 # LLM settings (vLLM with Qwen2.5-3B-Instruct)
 LLM_MODEL_NAME = "Qwen/Qwen2.5-3B-Instruct"
 LLM_API_BASE = os.getenv("VLLM_API_BASE", "http://localhost:8000/v1")
@@ -40,6 +45,11 @@ TABLE_MIN_ROWS_FOR_SPLIT = 25
 TOP_K_RETRIEVAL = 10
 RELEVANCE_THRESHOLD = 0.3
 CONTEXT_EXPANSION_WINDOW = 2  # Number of adjacent chunks to retrieve for tables
+
+# Hybrid search settings
+ENABLE_HYBRID_SEARCH = os.getenv("ENABLE_HYBRID_SEARCH", "true").lower() == "true"
+SEMANTIC_WEIGHT = float(os.getenv("SEMANTIC_WEIGHT", "0.7"))  # Weight for semantic search
+KEYWORD_WEIGHT = float(os.getenv("KEYWORD_WEIGHT", "0.3"))  # Weight for keyword search
 
 # Document patterns
 MD_FILE_PATTERN = "Public_*.md"

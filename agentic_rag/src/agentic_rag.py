@@ -160,11 +160,12 @@ Respond in JSON format:
         if target_document:
             filter_dict['filename'] = target_document
         
-        # Retrieve chunks
+        # Retrieve chunks using the selected search strategy
         retrieved = self.indexer.search(
             query_text=query_text,
             top_k=10,
-            filter_dict=filter_dict if filter_dict else None
+            filter_dict=filter_dict if filter_dict else None,
+            search_mode=search_strategy  # Use the strategy determined by agent
         )
         
         state['retrieved_chunks'] = retrieved

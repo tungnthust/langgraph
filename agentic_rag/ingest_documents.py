@@ -35,7 +35,10 @@ def main():
         text_chunk_size=TEXT_CHUNK_SIZE,
         text_chunk_overlap=TEXT_CHUNK_OVERLAP,
         table_max_rows=TABLE_MAX_ROWS_PER_CHUNK,
-        table_min_rows_for_split=TABLE_MIN_ROWS_FOR_SPLIT
+        table_min_rows_for_split=TABLE_MIN_ROWS_FOR_SPLIT,
+        enable_keyword_extraction=ENABLE_KEYWORD_EXTRACTION,
+        ner_model_name=NER_MODEL_NAME,
+        ner_device=NER_DEVICE
     )
     
     # Parse all documents
@@ -70,7 +73,9 @@ def main():
         embedding_model_name=EMBEDDING_MODEL_NAME,
         vector_size=QDRANT_VECTOR_SIZE,
         batch_size=EMBEDDING_BATCH_SIZE,
-        device=EMBEDDING_DEVICE
+        device=EMBEDDING_DEVICE,
+        semantic_weight=SEMANTIC_WEIGHT,
+        keyword_weight=KEYWORD_WEIGHT
     )
     
     # Initialize collection (overwrite if exists)

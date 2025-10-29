@@ -18,12 +18,15 @@ class EmbeddingIndexer:
     
     def __init__(self, qdrant_host: str, qdrant_port: int,
                  collection_name: str, embedding_model_name: str,
-                 vector_size: int, batch_size: int = 32, device: str = "cuda"):
+                 vector_size: int, batch_size: int = 32, device: str = "cuda",
+                 semantic_weight: float = 0.7, keyword_weight: float = 0.3):
         self.qdrant_host = qdrant_host
         self.qdrant_port = qdrant_port
         self.collection_name = collection_name
         self.vector_size = vector_size
         self.batch_size = batch_size
+        self.semantic_weight = semantic_weight
+        self.keyword_weight = keyword_weight
         
         print(f"Loading embedding model: {embedding_model_name}")
         # Load BGE-M3 model
@@ -120,8 +123,26 @@ class EmbeddingIndexer:
         print(f"Successfully indexed {len(chunks)} chunks")
     
     def search(self, query_text: str, top_k: int = 10,
-               filter_dict: Optional[Dict] = None) -> List[Dict]:
-        """Search for similar chunks in Qdrant"""
+               filter_dict: Optional[Dict] = None, search_mode: str = "semantic") -> List[Dict]:
+        """
+        Search for similar chunks in Qdrant.
+        
+        Args:
+            query_text: Query text
+            top_k: Number of results to return
+            filter_dict: Optional filters
+            search_mode: 'semantic', 'keyword', or 'hybrid'
+        """
+        if search_mode == "hybrid":
+            return self.hybrid_search(query_text, top_k, filter_dict)
+        elif search_mode == "keyword":
+            return self.keyword_search(query_text, top_k, filter_dict)
+        else:  # semantic
+            return self.semantic_search(query_text, top_k, filter_dict)
+    
+    def semantic_search(self, query_text: str, top_k: int = 10,
+                       filter_dict: Optional[Dict] = None) -> List[Dict]:
+        """Pure semantic search using embeddings"""
         # Generate query embedding
         query_embedding = self.embed_texts([query_text])[0]
         
@@ -158,6 +179,153 @@ class EmbeddingIndexer:
             })
         
         return formatted_results
+    
+    def keyword_search(self, query_text: str, top_k: int = 10,
+                      filter_dict: Optional[Dict] = None) -> List[Dict]:
+        """Keyword-based search using metadata keywords"""
+        import re
+        
+        # Extract keywords from query
+        query_keywords = set(re.findall(r'\b\w+\b', query_text.lower()))
+        
+        # Get all points (or use scroll with filter)
+        scroll_filter = None
+        if filter_dict:
+            conditions = []
+            for key, value in filter_dict.items():
+                conditions.append(
+                    FieldCondition(
+                        key=key,
+                        match=MatchValue(value=value)
+                    )
+                )
+            scroll_filter = Filter(must=conditions)
+        
+        # Scroll through collection
+        results, _ = self.client.scroll(
+            collection_name=self.collection_name,
+            scroll_filter=scroll_filter,
+            limit=min(top_k * 10, 1000),  # Get more candidates for keyword matching
+            with_payload=True,
+            with_vectors=False
+        )
+        
+        # Score by keyword matching
+        scored_results = []
+        for point in results:
+            score = 0.0
+            
+            # Check keywords in metadata
+            chunk_keywords = point.payload.get('keywords', [])
+            if chunk_keywords:
+                matches = len(query_keywords.intersection(set(k.lower() for k in chunk_keywords)))
+                score += matches * 0.5
+            
+            # Check keywords in content
+            content = point.payload.get('content_for_embedding', '')
+            content_words = set(re.findall(r'\b\w+\b', content.lower()))
+            matches = len(query_keywords.intersection(content_words))
+            score += matches * 0.3
+            
+            # Check in table title or section heading
+            table_title = point.payload.get('table_title', '')
+            section_heading = point.payload.get('section_heading', '')
+            combined_heading = f"{table_title} {section_heading}".lower()
+            heading_words = set(re.findall(r'\b\w+\b', combined_heading))
+            matches = len(query_keywords.intersection(heading_words))
+            score += matches * 0.2
+            
+            if score > 0:
+                scored_results.append({
+                    'score': score,
+                    'chunk_id': point.payload['chunk_id'],
+                    'content': point.payload['content'],
+                    'metadata': {k: v for k, v in point.payload.items() 
+                               if k not in ['content', 'content_for_embedding', 'chunk_id']}
+                })
+        
+        # Sort by score and return top_k
+        scored_results.sort(key=lambda x: x['score'], reverse=True)
+        return scored_results[:top_k]
+    
+    def hybrid_search(self, query_text: str, top_k: int = 10,
+                     filter_dict: Optional[Dict] = None,
+                     semantic_weight: float = None,
+                     keyword_weight: float = None) -> List[Dict]:
+        """
+        Hybrid search combining semantic and keyword-based retrieval.
+        
+        Args:
+            query_text: Query text
+            top_k: Number of results to return
+            filter_dict: Optional filters
+            semantic_weight: Weight for semantic search (uses instance default if None)
+            keyword_weight: Weight for keyword search (uses instance default if None)
+        """
+        # Use instance weights if not provided
+        if semantic_weight is None:
+            semantic_weight = self.semantic_weight
+        if keyword_weight is None:
+            keyword_weight = self.keyword_weight
+        # Get results from both methods
+        semantic_results = self.semantic_search(query_text, top_k * 2, filter_dict)
+        keyword_results = self.keyword_search(query_text, top_k * 2, filter_dict)
+        
+        # Normalize scores to [0, 1]
+        if semantic_results:
+            max_sem_score = max(r['score'] for r in semantic_results)
+            if max_sem_score > 0:
+                for r in semantic_results:
+                    r['semantic_score'] = r['score'] / max_sem_score
+        
+        if keyword_results:
+            max_key_score = max(r['score'] for r in keyword_results)
+            if max_key_score > 0:
+                for r in keyword_results:
+                    r['keyword_score'] = r['score'] / max_key_score
+        
+        # Merge results by chunk_id
+        merged = {}
+        for r in semantic_results:
+            chunk_id = r['chunk_id']
+            merged[chunk_id] = {
+                'chunk_id': chunk_id,
+                'content': r['content'],
+                'metadata': r['metadata'],
+                'semantic_score': r.get('semantic_score', 0),
+                'keyword_score': 0
+            }
+        
+        for r in keyword_results:
+            chunk_id = r['chunk_id']
+            if chunk_id in merged:
+                merged[chunk_id]['keyword_score'] = r.get('keyword_score', 0)
+            else:
+                merged[chunk_id] = {
+                    'chunk_id': chunk_id,
+                    'content': r['content'],
+                    'metadata': r['metadata'],
+                    'semantic_score': 0,
+                    'keyword_score': r.get('keyword_score', 0)
+                }
+        
+        # Calculate hybrid score
+        for chunk_id in merged:
+            merged[chunk_id]['score'] = (
+                semantic_weight * merged[chunk_id]['semantic_score'] +
+                keyword_weight * merged[chunk_id]['keyword_score']
+            )
+        
+        # Sort by hybrid score
+        results = list(merged.values())
+        results.sort(key=lambda x: x['score'], reverse=True)
+        
+        # Clean up intermediate scores before returning
+        for r in results:
+            r.pop('semantic_score', None)
+            r.pop('keyword_score', None)
+        
+        return results[:top_k]
     
     def get_chunk_by_id(self, chunk_id: str) -> Optional[Dict]:
         """Retrieve a specific chunk by its ID"""

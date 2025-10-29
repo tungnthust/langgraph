@@ -10,6 +10,8 @@ qdrant-client>=1.11.0
 # Embeddings
 FlagEmbedding>=1.2.11
 sentence-transformers>=3.0.0
+transformers>=4.35.0
+torch>=2.0.0
 
 # Document processing
 beautifulsoup4>=4.12.0

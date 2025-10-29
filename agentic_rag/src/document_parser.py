@@ -8,6 +8,11 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 from dataclasses import dataclass
 
+try:
+    from .keyword_extractor import KeywordExtractor
+except ImportError:
+    KeywordExtractor = None
+
 
 @dataclass
 class DocumentChunk:
@@ -23,11 +28,25 @@ class DocumentParser:
     """Parse markdown documents with intelligent chunking and metadata extraction"""
     
     def __init__(self, text_chunk_size: int = 512, text_chunk_overlap: int = 64,
-                 table_max_rows: int = 20, table_min_rows_for_split: int = 25):
+                 table_max_rows: int = 20, table_min_rows_for_split: int = 25,
+                 enable_keyword_extraction: bool = True, ner_model_name: str = None,
+                 ner_device: str = "cuda"):
         self.text_chunk_size = text_chunk_size
         self.text_chunk_overlap = text_chunk_overlap
         self.table_max_rows = table_max_rows
         self.table_min_rows_for_split = table_min_rows_for_split
+        
+        # Initialize keyword extractor
+        self.keyword_extractor = None
+        if enable_keyword_extraction and KeywordExtractor is not None:
+            try:
+                self.keyword_extractor = KeywordExtractor(
+                    model_name=ner_model_name or "NlpHUST/ner-vietnamese-electra-base",
+                    device=ner_device,
+                    enabled=True
+                )
+            except Exception as e:
+                print(f"Warning: Could not initialize keyword extractor: {e}")
     
     def parse_document(self, file_path: Path) -> List[DocumentChunk]:
         """Parse a markdown document into intelligent chunks"""
@@ -80,10 +99,21 @@ class DocumentParser:
                     chunks.extend(text_chunks)
                 i = section_end_idx + 1
         
-        # Add chunk position metadata
+        # Add chunk position metadata and relationships
         for idx, chunk in enumerate(chunks):
             chunk.metadata['chunk_position'] = idx
             chunk.metadata['total_chunks'] = len(chunks)
+            
+            # Add previous/next chunk relationships
+            if idx > 0:
+                chunk.metadata['previous_chunk_id'] = chunks[idx - 1].chunk_id
+            else:
+                chunk.metadata['previous_chunk_id'] = None
+            
+            if idx < len(chunks) - 1:
+                chunk.metadata['next_chunk_id'] = chunks[idx + 1].chunk_id
+            else:
+                chunk.metadata['next_chunk_id'] = None
         
         return chunks
     
@@ -229,12 +259,21 @@ class DocumentParser:
         
         chunk_id = f"{filename}_text_{chunk_idx}"
         
+        # Extract keywords if extractor is available
+        keywords = []
+        if self.keyword_extractor is not None:
+            try:
+                keywords = self.keyword_extractor.extract_keywords(content, max_keywords=15)
+            except Exception as e:
+                print(f"Warning: Keyword extraction failed: {e}")
+        
         metadata = {
             'filename': filename,
             'document_title': title,
             'section_heading': heading or "N/A",
             'chunk_type': 'text',
             'chunk_index_in_type': chunk_idx,
+            'keywords': keywords,  # Add extracted keywords
         }
         
         return DocumentChunk(

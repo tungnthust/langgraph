@@ -44,7 +44,9 @@ def main():
             embedding_model_name=EMBEDDING_MODEL_NAME,
             vector_size=QDRANT_VECTOR_SIZE,
             batch_size=EMBEDDING_BATCH_SIZE,
-            device=EMBEDDING_DEVICE
+            device=EMBEDDING_DEVICE,
+            semantic_weight=SEMANTIC_WEIGHT,
+            keyword_weight=KEYWORD_WEIGHT
         )
         
         # Initialize RAG
