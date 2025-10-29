@@ -4,10 +4,44 @@ Implements intelligent retrieval and answer generation workflow.
 """
 from typing import TypedDict, List, Dict, Annotated
 import operator
+import logging
+from datetime import datetime
+from pathlib import Path
 from langchain_openai import ChatOpenAI
 from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolNode
+
+
+# Set up logging
+def setup_logger(log_file: str = None):
+    """Setup logger for agent decisions"""
+    if log_file is None:
+        log_dir = Path(__file__).parent.parent / "outputs"
+        log_dir.mkdir(exist_ok=True)
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        log_file = log_dir / f"agent_decisions_{timestamp}.log"
+    
+    logger = logging.getLogger("AgenticRAG")
+    logger.setLevel(logging.INFO)
+    
+    # File handler
+    fh = logging.FileHandler(log_file, encoding='utf-8')
+    fh.setLevel(logging.INFO)
+    
+    # Console handler
+    ch = logging.StreamHandler()
+    ch.setLevel(logging.WARNING)
+    
+    # Formatter
+    formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    fh.setFormatter(formatter)
+    ch.setFormatter(formatter)
+    
+    logger.addHandler(fh)
+    logger.addHandler(ch)
+    
+    return logger
 
 
 class AgentState(TypedDict):
@@ -35,8 +69,17 @@ class AgenticRAG:
     """Agentic RAG system with intelligent retrieval and reasoning"""
     
     def __init__(self, embedding_indexer, llm_api_base: str, llm_api_key: str,
-                 llm_model_name: str, max_tokens: int = 2048, temperature: float = 0.1):
+                 llm_model_name: str, max_tokens: int = 2048, temperature: float = 0.1,
+                 log_file: str = None):
         self.indexer = embedding_indexer
+        
+        # Setup logger
+        self.logger = setup_logger(log_file)
+        self.logger.info("=" * 80)
+        self.logger.info("AgenticRAG System Initialized")
+        self.logger.info(f"LLM Model: {llm_model_name}")
+        self.logger.info(f"API Base: {llm_api_base}")
+        self.logger.info("=" * 80)
         
         # Initialize LLM (vLLM server compatible with OpenAI API)
         self.llm = ChatOpenAI(
@@ -82,6 +125,9 @@ class AgenticRAG:
         """Analyze the question to determine search strategy"""
         question = state['question']
         
+        self.logger.info(f"\n{'='*80}")
+        self.logger.info(f"ANALYZING QUESTION: {question[:100]}...")
+        
         # Create analysis prompt
         analysis_prompt = f"""Analyze this multiple-choice question and determine:
 1. Question type: Does it mention a specific filename (e.g., "Public_628"), a table, or general content?
@@ -118,11 +164,17 @@ Respond in JSON format:
                 state['question_type'] = analysis.get('question_type', 'content_specific')
                 state['target_document'] = analysis.get('target_document', '')
                 state['search_strategy'] = analysis.get('search_strategy', 'hybrid')
+                
+                self.logger.info(f"ANALYSIS RESULT:")
+                self.logger.info(f"  Question Type: {state['question_type']}")
+                self.logger.info(f"  Target Document: {state['target_document']}")
+                self.logger.info(f"  Search Strategy: {state['search_strategy']}")
             except:
                 # Fallback
                 state['question_type'] = 'content_specific'
                 state['target_document'] = ''
                 state['search_strategy'] = 'hybrid'
+                self.logger.warning("  Failed to parse analysis, using fallback")
         else:
             # Heuristic fallback
             if 'Public_' in question:
@@ -140,6 +192,11 @@ Respond in JSON format:
                 state['question_type'] = 'content_specific'
                 state['target_document'] = ''
                 state['search_strategy'] = 'semantic'
+            
+            self.logger.info(f"HEURISTIC ANALYSIS:")
+            self.logger.info(f"  Question Type: {state['question_type']}")
+            self.logger.info(f"  Target Document: {state['target_document']}")
+            self.logger.info(f"  Search Strategy: {state['search_strategy']}")
         
         return state
     
@@ -149,6 +206,10 @@ Respond in JSON format:
         choices = state['choices']
         search_strategy = state['search_strategy']
         target_document = state['target_document']
+        
+        self.logger.info(f"\nRETRIEVING CHUNKS:")
+        self.logger.info(f"  Strategy: {search_strategy}")
+        self.logger.info(f"  Target Doc: {target_document if target_document else 'Any'}")
         
         # Combine question and choices for better retrieval
         query_text = f"{question}\n\nChoices:\n"
@@ -167,6 +228,10 @@ Respond in JSON format:
             filter_dict=filter_dict if filter_dict else None,
             search_mode=search_strategy  # Use the strategy determined by agent
         )
+        
+        self.logger.info(f"  Retrieved {len(retrieved)} chunks")
+        for i, chunk in enumerate(retrieved[:3]):
+            self.logger.info(f"    Chunk {i+1}: {chunk['chunk_id']} (score: {chunk['score']:.3f})")
         
         state['retrieved_chunks'] = retrieved
         
@@ -254,8 +319,12 @@ Respond in JSON format:
         for idx, chunk in enumerate(relevant_chunks):
             context_parts.append(f"--- Context {idx + 1} ---")
             context_parts.append(f"Source: {chunk['metadata']['filename']}")
-            if chunk['metadata'].get('table_title') != 'N/A':
-                context_parts.append(f"Table: {chunk['metadata']['table_title']}")
+            
+            # Handle table_title safely (it might be None or not exist)
+            table_title = chunk['metadata'].get('table_title')
+            if table_title and table_title != 'N/A':
+                context_parts.append(f"Table: {table_title}")
+            
             context_parts.append(f"Content:\n{chunk['content']}")
             context_parts.append("")
         
@@ -310,6 +379,9 @@ Respond in JSON format:
         
         response_text = response.content
         
+        self.logger.info(f"\nGENERATED ANSWER:")
+        self.logger.info(f"  Raw Response: {response_text[:200]}...")
+        
         # Try to extract JSON
         json_match = re.search(r'\{[^}]+\}', response_text, re.DOTALL)
         if json_match:
@@ -323,8 +395,13 @@ Respond in JSON format:
                 num_correct = answer_data.get('num_correct_answers', len(state['selected_choices']))
                 selected = ','.join(sorted(state['selected_choices']))
                 state['answer'] = f"{num_correct},{selected}"
+                
+                self.logger.info(f"  Answer: {state['answer']}")
+                self.logger.info(f"  Confidence: {state['confidence']}")
+                self.logger.info(f"  Reasoning: {state['reasoning'][:100]}...")
             except Exception as e:
                 print(f"Error parsing JSON response: {e}")
+                self.logger.error(f"  JSON parsing error: {e}")
                 # Fallback
                 state['selected_choices'] = ['A']
                 state['confidence'] = 0.3
@@ -346,6 +423,8 @@ Respond in JSON format:
             
             state['confidence'] = 0.3
             state['reasoning'] = 'Fallback parsing'
+            
+            self.logger.warning(f"  Fallback answer: {state['answer']}")
         
         return state
     

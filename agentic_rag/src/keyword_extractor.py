@@ -55,7 +55,7 @@ class KeywordExtractor:
             return self._extract_simple(text, max_keywords)
     
     def _extract_with_ner(self, text: str, max_keywords: int) -> List[str]:
-        """Extract keywords using NER model"""
+        """Extract keywords using NER model - ONLY NER entities, no frequency fallback"""
         try:
             import torch
             
@@ -80,42 +80,82 @@ class KeywordExtractor:
             tokens = self.tokenizer.convert_ids_to_tokens(inputs['input_ids'][0])
             predictions = predictions[0].cpu().numpy()
             
-            # Extract named entities
-            keywords = set()
+            # Extract named entities - ONLY NER entities
+            keywords = []
             current_entity = []
+            current_tokens = []
             
             for token, pred in zip(tokens, predictions):
                 # Skip special tokens
-                if token in ['[CLS]', '[SEP]', '[PAD]']:
+                if token in ['<s>', '</s>', '<pad>', '[CLS]', '[SEP]', '[PAD]', '<unk>']:
                     continue
                 
                 # Check if this is an entity (non-O tag)
                 if pred != 0:  # Assuming 0 is 'O' (outside entity)
-                    # Clean token
-                    token_clean = token.replace('##', '')
-                    current_entity.append(token_clean)
+                    # Store original token for reconstruction
+                    current_tokens.append(token)
+                    current_entity.append(token)
                 else:
                     # End of entity
                     if current_entity:
-                        entity = ''.join(current_entity)
-                        if len(entity) > 1:  # Filter out single characters
-                            keywords.add(entity)
+                        # Reconstruct entity properly from tokens
+                        entity = self._reconstruct_entity(current_tokens)
+                        if entity and len(entity) > 1 and entity != '[UNK]':
+                            keywords.append(entity)
                         current_entity = []
+                        current_tokens = []
             
             # Add last entity if exists
             if current_entity:
-                entity = ''.join(current_entity)
-                if len(entity) > 1:
-                    keywords.add(entity)
+                entity = self._reconstruct_entity(current_tokens)
+                if entity and len(entity) > 1 and entity != '[UNK]':
+                    keywords.append(entity)
             
-            # Also add important words as fallback
-            keywords.update(self._extract_important_words(text, max_keywords // 2))
+            # Return unique keywords (ONLY from NER, no frequency fallback)
+            unique_keywords = []
+            seen = set()
+            for kw in keywords:
+                if kw.lower() not in seen:
+                    seen.add(kw.lower())
+                    unique_keywords.append(kw)
             
-            return list(keywords)[:max_keywords]
+            return unique_keywords[:max_keywords]
             
         except Exception as e:
             print(f"Warning: NER extraction failed: {e}")
-            return self._extract_simple(text, max_keywords)
+            import traceback
+            traceback.print_exc()
+            return []
+    
+    def _reconstruct_entity(self, tokens: List[str]) -> str:
+        """
+        Reconstruct entity from subword tokens properly.
+        Handles both WordPiece (##) and SentencePiece (▁) tokenization.
+        """
+        if not tokens:
+            return ""
+        
+        entity = ""
+        for token in tokens:
+            # Skip special tokens
+            if token in ['<s>', '</s>', '<pad>', '[CLS]', '[SEP]', '[PAD]', '<unk>', '[UNK]']:
+                continue
+            
+            # Handle SentencePiece (used by XLM-RoBERTa)
+            if token.startswith('▁'):
+                # This is a new word start
+                entity += " " + token[1:]
+            # Handle WordPiece (##prefix)
+            elif token.startswith('##'):
+                # This is a continuation
+                entity += token[2:]
+            else:
+                # First token or standalone
+                if entity and not entity.endswith(' '):
+                    entity += " "
+                entity += token
+        
+        return entity.strip()
     
     def _extract_simple(self, text: str, max_keywords: int) -> List[str]:
         """

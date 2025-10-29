@@ -443,15 +443,25 @@ class DocumentParser:
         
         chunk_id = f"{filename}_table_{part_idx}"
         
+        # Extract keywords from table text (after removing HTML)
+        keywords = []
+        if self.keyword_extractor is not None:
+            try:
+                # Extract keywords from the clean table text
+                keywords = self.keyword_extractor.extract_keywords(content_for_embedding, max_keywords=15)
+            except Exception as e:
+                print(f"Warning: Keyword extraction failed for table: {e}")
+        
         metadata = {
             'filename': filename,
             'document_title': title,
             'section_heading': heading or "N/A",
-            'table_title': table_title or "N/A",
+            'table_title': table_title if table_title else None,  # None instead of "N/A"
             'chunk_type': 'table',
             'is_multi_part_table': is_multi_part,
             'table_part_index': part_idx,
             'table_total_parts': total_parts,
+            'keywords': keywords,  # Add keywords for tables
         }
         
         return DocumentChunk(
